@@ -1,39 +1,67 @@
-# Remix Resilience Developer Assessment
+# Inventory Dashboard
 
-This project implements an inventory dashboard that handles an unreliable backend API using Remix/React Router v7 features like Streaming, Optimistic UI, and Error Boundaries.
+A warehouse inventory dashboard built with React Router v7 and Shopify Polaris. It demonstrates resilience patterns against an unreliable legacy backend API.
 
-## Implementation Choices
+## The Challenge
 
-### Task 2: Instant Feedback (Optimistic UI)
+The backend simulates real-world legacy system problems:
+- 3-second latency fetching inventory
+- Random 500 errors (20% of requests)
+- 1-second delay on stock claims
 
-To achieve instant feedback when claiming stock:
-1.  **Unique Fetcher per Item**: Each `InventoryItem` component uses its own `useFetcher` hook. This isolates the state management for each item, preventing UI glitches where unrelated items might update.
-2.  **Optimistic State Calculation**:
-    ```typescript
-    const isClaiming = fetcher.formData?.get("itemId") === id;
-    const displayStock = isClaiming ? stock - 1 : stock;
-    ```
-    We check `fetcher.formData` immediately. If a submission is in flight for the current item, we calculate the `displayStock` by subtracting 1 from the prop `stock`. This provides 0ms feedback.
-3.  **Automatic Rollback**:
-    If the server action fails (e.g., "Out of Stock"), the fetcher returns an error. The `formData` is cleared, and `displayStock` reverts to the original `stock` prop (which hasn't changed on the server).
-4.  **Race Condition Protection**:
-    By disabling the button while `isClaiming` is true (`disabled={isClaiming || displayStock <= 0}`), we prevent double-submission while the request is pending.
+## How I Built It
 
-### Task 3: Contain the Blast (Retry Logic)
+### Streaming
 
-To handle the 20% random API failure rate:
-1.  **Route-Level Error Boundary**: We export an `ErrorBoundary` component from `dashboard.tsx`. This catches any errors thrown during the loader execution (including streaming failures if handled at the route level).
-2.  **User Feedback**: We use a Polaris `Banner` component inside the Error Boundary to inform the user of the failure without crashing the entire application shell (Header/Nav would remain if they existed outside the route).
-3.  **Retry Mechanism**:
-    ```typescript
-    const revalidator = useRevalidator();
-    const handleRetry = () => {
-        revalidator.revalidate();
-    };
-    ```
-    We use `useRevalidator` to re-trigger the loader without a full page refresh. This provides a smoother experience than `window.location.reload()`, preserving client-side state where applicable.
+Instead of blocking the page for 3 seconds with `await getInventory()`, the loader returns the promise directly and lets React Router stream the data:
+
+```typescript
+export async function loader() {
+  const inventoryPromise = getInventory();
+  return { inventory: inventoryPromise }; // Not awaited!
+}
+```
+
+The UI shows a skeleton loader while the data streams in. No blank screens.
+
+### Optimistic UI
+
+When you click "Claim One", the stock count drops instantly (no waiting for the server). I use `useFetcher` to track pending state:
+
+```typescript
+const isClaiming = fetcher.formData?.get("itemId") === item.id;
+const displayedStock = isClaiming ? item.stock - 1 : item.stock;
+```
+
+If the claim fails (out of stock, etc.), the UI automatically rolls back to the real value. The button also disables during submission to prevent double-clicks.
+
+### Error Handling
+
+Since the API randomly fails, I implemented two levels of error boundaries:
+
+1. **Streaming level** - `Await`'s `errorElement` catches inventory fetch failures and shows a retry banner without breaking the page layout
+2. **Route level** - A proper `ErrorBoundary` export catches anything unexpected
+
+Both use `useRevalidator()` to retry without a full page refresh.
 
 ## Tech Stack
--   **Framework**: React Router v7 (Remix)
--   **UI Library**: Shopify Polaris
--   **Styling**: Tailwind CSS (via Vite)
+
+- React Router v7
+- Shopify Polaris for UI
+- TypeScript
+- Vite
+
+## Running It
+
+```bash
+npm install
+npm run dev
+```
+
+Open [http://localhost:5173/dashboard](http://localhost:5173/dashboard)
+
+## Testing Error States
+
+- Refresh a few times to see the random API failures (~20% chance)
+- Try claiming "Mega Widget B" (starts at 0 stock) to see the error handling
+- Hit retry on error banners - it re-fetches without refreshing the page
